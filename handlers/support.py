@@ -16,7 +16,10 @@ def register_handlers(bot: TeleBot) -> None:
     - OWNER/OPERATOR отвечают реплаем на сообщение в группе -> бот отправляет ответ клиенту
     """
 
-    @bot.message_handler(func=lambda m: m.chat.type == "private", content_types=["text", "photo", "document", "voice", "video", "sticker"])
+    @bot.message_handler(
+        func=lambda m: m.chat.type == "private" and get_role(m.from_user.id) == CUSTOMER,
+        content_types=["text", "photo", "document", "voice", "video", "sticker"]
+    )
     def customer_to_group(message: Message) -> None:
         # В личке принимаем сообщения от клиентов (и вообще от всех)
         role = get_role(message.from_user.id)
