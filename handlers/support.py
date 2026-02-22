@@ -22,14 +22,14 @@ def register_handlers(bot: TeleBot) -> None:
     """
 
     @bot.message_handler(
-        func=lambda m: m.chat.type == "private",
+        func=lambda m: (
+            m.chat.type == "private"
+            and m.from_user is not None
+            and get_role(m.from_user.id) == CUSTOMER
+        ),
         content_types=["text", "photo", "document", "voice", "video", "sticker"]
     )
     def customer_to_group(message: Message) -> None:
-        # Только CUSTOMER
-        if get_role(message.from_user.id) != CUSTOMER:
-            return
-
         customer_id = message.from_user.id
 
         # Только если клиент нажал "Сделать заказ"
