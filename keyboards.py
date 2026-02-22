@@ -13,10 +13,11 @@ def main_menu_keyboard(role: str) -> InlineKeyboardMarkup:
         )
         return markup
 
-    # CUSTOMER (как было)
+    # CUSTOMER
     markup.add(
         InlineKeyboardButton("🛒 Сделать заказ", callback_data="create_order"),
-        InlineKeyboardButton("📦 Мои заказы", callback_data="my_orders"),
+        InlineKeyboardButton("📇 Контакты", callback_data="contacts"),
+        InlineKeyboardButton("🆘 Помощь", callback_data="help_customer"),
     )
     return markup
 
@@ -52,7 +53,7 @@ def cost_back_keyboard() -> InlineKeyboardMarkup:
     return m
 
 
-# ---------- Склад (если у тебя уже есть свои — можешь оставить, но этот вариант рабочий) ----------
+# ---------- Склад ----------
 
 def stock_view_keyboard(page: int, total_pages: int) -> InlineKeyboardMarkup:
     m = InlineKeyboardMarkup()

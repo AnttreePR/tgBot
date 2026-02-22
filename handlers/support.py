@@ -1,50 +1,57 @@
+import re
 from telebot import TeleBot
 from telebot.types import Message
 
 from ..config import MANAGER_CHAT_ID
-from ..roles import get_role, OWNER, OPERATOR, CUSTOMER
+from ..roles import get_role, CUSTOMER
+from ..order_state import is_order_active, stop_order
 
-# Память: message_id в группе -> customer_id
-# (если бот перезапустится — связи сотрутся, но для старта идеально)
-GROUP_MSG_TO_CUSTOMER = {}
+# message_id в группе -> customer_id
+GROUP_TO_USER: dict[int, int] = {}
+
+_CLOSE_RE = re.compile(r"^(?:/close|close|закрыть|закрой)\s+(\d+)\s*$", re.IGNORECASE)
 
 
 def register_handlers(bot: TeleBot) -> None:
     """
-    План B:
-    - CUSTOMER пишет боту в личку -> бот копирует/пересылает в группу менеджеров
-    - OWNER/OPERATOR отвечают реплаем на сообщение в группе -> бот отправляет ответ клиенту
+    CUSTOMER ↔ менеджеры (через группу)
+
+    - CUSTOMER пишет в личку -> в группу уходит ТОЛЬКО если включен ORDER_MODE
+    - Любой участник группы может ответить reply -> бот отправит ответ клиенту
+    - Закрытие: "/close <id>" или "закрыть <id>" (ID обязателен)
     """
 
     @bot.message_handler(
-        func=lambda m: m.chat.type == "private" and get_role(m.from_user.id) == CUSTOMER,
+        func=lambda m: m.chat.type == "private",
         content_types=["text", "photo", "document", "voice", "video", "sticker"]
     )
     def customer_to_group(message: Message) -> None:
-        # В личке принимаем сообщения от клиентов (и вообще от всех)
-        role = get_role(message.from_user.id)
-
-        # Если это не CUSTOMER — не пересылаем (иначе ты сам себе в группу начнёшь сыпать)
-        if role != CUSTOMER:
+        # Только CUSTOMER
+        if get_role(message.from_user.id) != CUSTOMER:
             return
 
         customer_id = message.from_user.id
+
+        # Только если клиент нажал "Сделать заказ"
+        if not is_order_active(customer_id):
+            bot.send_message(customer_id, "Чтобы написать менеджеру, сначала нажми 🛒 «Сделать заказ».")
+            return
+
         customer_name = (message.from_user.first_name or "").strip()
         customer_username = message.from_user.username
 
-        header = "🆕 Сообщение от клиента\n"
+        header = "🆕 <b>Сообщение от клиента</b>\n"
         header += f"👤 {customer_name if customer_name else 'Без имени'}"
         if customer_username:
             header += f" (@{customer_username})"
-        header += f"\n🆔 {customer_id}\n\n"
+        header += f"\n🆔 <code>{customer_id}</code>\n\n"
+        header += f"Закрыть: <code>/close {customer_id}</code> или <code>закрыть {customer_id}</code>"
 
-        # 1) Сначала отправим “шапку” текстом
-        info_msg = bot.send_message(MANAGER_CHAT_ID, header)
+        # Шапка (тоже маппим)
+        info_msg = bot.send_message(MANAGER_CHAT_ID, header, parse_mode="HTML")
+        GROUP_TO_USER[info_msg.message_id] = customer_id
 
-        # 2) Затем скопируем/перешлём само сообщение
-        # Копирование лучше, потому что оно работает для разных типов и не “ломает” оформление.
-        # Но reply_to_message.forward_from может не быть.
-        # Поэтому мы храним mapping: msg_id в группе -> customer_id.
+        # Копия сообщения клиента (маппим её тоже)
         try:
             copied = bot.copy_message(
                 chat_id=MANAGER_CHAT_ID,
@@ -52,50 +59,46 @@ def register_handlers(bot: TeleBot) -> None:
                 message_id=message.message_id,
                 reply_to_message_id=info_msg.message_id
             )
-            # copy_message возвращает message_id (int) в pyTelegramBotAPI
-            # Но иногда может вернуть Message — зависит от версии.
             group_msg_id = copied.message_id if hasattr(copied, "message_id") else copied
-            GROUP_MSG_TO_CUSTOMER[group_msg_id] = customer_id
-
+            GROUP_TO_USER[group_msg_id] = customer_id
         except Exception:
-            # Фоллбек: если copy_message недоступен/сломался — просто forward
             fwd = bot.forward_message(MANAGER_CHAT_ID, message.chat.id, message.message_id)
-            GROUP_MSG_TO_CUSTOMER[fwd.message_id] = customer_id
-
-        # Клиенту можно подтверждение (по желанию)
-        bot.send_message(customer_id, "✅ Сообщение отправлено менеджеру. Мы скоро ответим.")
+            GROUP_TO_USER[fwd.message_id] = customer_id
 
     @bot.message_handler(func=lambda m: m.chat.id == MANAGER_CHAT_ID, content_types=["text"])
-    def manager_reply_to_customer(message: Message) -> None:
-        # Это обработчик сообщений В ГРУППЕ менеджеров
-        role = get_role(message.from_user.id)
-        if role not in (OWNER, OPERATOR):
+    def group_router(message: Message) -> None:
+        text = (message.text or "").strip()
+
+        # Закрытие по команде с ID (reply не обязателен)
+        m = _CLOSE_RE.match(text)
+        if m:
+            customer_id = int(m.group(1))
+            stop_order(customer_id)
+
+            try:
+                bot.send_message(
+                    customer_id,
+                    "✅ Диалог закрыт.\n\n"
+                    "Чтобы снова написать менеджеру — нажми 🛒 «Сделать заказ»."
+                )
+            except Exception:
+                pass
+
+            bot.reply_to(message, f"✅ Диалог закрыт для клиента {customer_id}")
             return
 
-        # Отвечать клиенту можно только reply-ем на сообщение (иначе непонятно кому)
+        # Обычный ответ клиенту: нужен reply на шапку/копию сообщения
         if not message.reply_to_message:
             return
 
         replied_id = message.reply_to_message.message_id
-
-        # Пытаемся найти customer_id по message_id, на который отвечают
-        customer_id = GROUP_MSG_TO_CUSTOMER.get(replied_id)
-
-        # Иногда менеджер отвечает не на копию, а на “шапку” (info_msg),
-        # тогда попробуем заглянуть на уровень ниже: reply_to_message может быть "шапка",
-        # а под ней было пересланное/скопированное сообщение.
+        customer_id = GROUP_TO_USER.get(replied_id)
         if not customer_id:
-            # Пытаемся найти по цепочке: если ответили на "шапку", то под ней обычно есть reply
-            # Но Telegram не даёт нам список ответов. Поэтому тут честно сообщаем.
-            bot.reply_to(message, "⚠️ Не могу определить клиента. Ответьте реплаем на сообщение клиента (копию/пересылку).")
             return
 
-        # Отправляем текст клиенту
-        text = message.text.strip()
-        if not text:
+        out = message.text.strip()
+        if not out:
             return
 
-        bot.send_message(customer_id, f"💬 Ответ менеджера:\n\n{text}")
-
-        # В группе отметим, что отправлено
+        bot.send_message(customer_id, f"💬 Менеджер:\n\n{out}")
         bot.reply_to(message, "✅ Отправлено клиенту.")

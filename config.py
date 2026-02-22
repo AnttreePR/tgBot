@@ -26,3 +26,8 @@ MANAGER_CHAT_ID: int = -5275376289
 
 COST_PER_MINUTE: float = 2.5   # ₽ за 1 минуту печати
 SPOOL_GRAMS: int = 1000        # грамм в 1 катушке
+
+# Контакты
+CONTACT_PHONE = "+7 (999) 123-45-67"
+CONTACT_EMAIL = "print@example.com"
+CONTACT_TG = "@your_manager_username"
